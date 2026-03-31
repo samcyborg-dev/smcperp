@@ -1,0 +1,11 @@
+streamlit==1.38.0
+plotly==5.22.0
+pandas==2.2.2
+numpy==1.26.4
+yfinance==0.2.40
+polygon-io-client==1.0.0
+vectorbt==0.26.2
+streamlit-option-menu==0.3.11
+streamlit-extras==0.4.0
+ta==0.11.0
+requests==2.31.0
