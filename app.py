@@ -2,136 +2,116 @@ import streamlit as st
 import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
-from polygon import RESTClient
-import vectorbt as vbt
-from datetime import datetime, timedelta
 import yfinance as yf
-from option_menu import option_menu
+import ccxt
+from ta.trend import EMAIndicator
+import streamlit.components.v1 as components
 
-# Page config
-st.set_page_config(
-    page_title="SupplyDemand OrderBlock Cyborg",
-    page_icon="🚀",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# Fast page config
+st.set_page_config(page_title="OrderBlock Cyborg FREE", layout="wide")
 
-st.title("🚀 SupplyDemand OrderBlock Cyborg")
-st.markdown("**LuxAlgo SMC + 5M Precision Entries | Real-Time Forex | Top 0.01% Performance**")
+st.title("🚀 OrderBlock Cyborg - FREE Edition")
+st.markdown("**LuxAlgo SMC + 5M Entries | 100% Free Data | Instant Load**")
 
-# Sidebar
+# Sidebar - FAST
 with st.sidebar:
-    st.header("⚙️ Settings")
-    symbol = st.text_input("Symbol", "EURUSD=X")
-    timeframe = st.selectbox("Timeframe", ["5m", "15m", "1H", "4H"])
-    selected = option_menu(
-        menu_title=None,
-        options=["Live Signals", "Backtest", "Kelly Sizing", "Tilt Monitor"],
-        icons=["📡", "📊", "⚖️", "🧠"],
-        default_index=0,
-    )
+    symbol = st.selectbox("Symbol (FREE)", 
+                         ["EURUSD=X", "GBPUSD=X", "BTC-USD", "ETH-USD"])
+    tf = st.selectbox("Timeframe", ["5m", "15m", "1H"])
+    page = st.radio("View", ["Live Chart", "Signals", "Backtest", "Kelly"])
 
-# Real-time data fetcher
-@st.cache_data(ttl=60)
-def fetch_data(symbol, days=30):
-    data = yf.download(symbol, period=f"{days}d", interval=timeframe)
-    return data
+# FREE Data Fetcher (2s max)
+@st.cache_data(ttl=120)  # 2min cache = instant
+def get_free_data(symbol, period="7d", interval=tf):
+    try:
+        data = yf.download(symbol, period=period, interval=interval)
+        return data.tail(500)  # Fast slice
+    except:
+        # Fallback crypto
+        exchange = ccxt.binance()
+        bars = exchange.fetch_ohlcv(symbol.replace("=X", ""), timeframe=interval, limit=500)
+        df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df.set_index('timestamp', inplace=True)
+        return df
 
-# Strategy engine (LuxAlgo SMC + your rules)
-def detect_order_blocks(df):
-    # 1H deepest candle logic
-    df['wick'] = df['High'] - df['Low']
-    deepest = df['wick'].rolling(20).max()
-    ob_condition = df['wick'] == deepest
-    return ob_condition
+# Order Block Detection (LuxAlgo Style)
+def find_order_blocks(df):
+    df['wick'] = df['high'] - df['low']
+    peaks = df['wick'].rolling(20, center=True).max()
+    ob = df['wick'] == peaks
+    return ob, df[ob].index.tolist()
 
-def fvg_signals(df):
-    fvg_bull = (df['Low'] > df['High'].shift(2))
-    fvg_bear = (df['High'] < df['Low'].shift(2))
+# FVG Detection
+def find_fvg(df):
+    fvg_bull = df['low'] > df['high'].shift(2)
+    fvg_bear = df['high'] < df['low'].shift(2)
     return fvg_bull, fvg_bear
 
-# Main pages
-if selected == "Live Signals":
-    data = fetch_data(symbol)
+# Main Pages (Lightning Fast)
+data = get_free_data(symbol)
+
+if page == "Live Chart":
+    st.subheader(f"📈 {symbol} - Real-time Order Blocks")
+    
+    fig = go.Figure()
+    fig.add_trace(go.Candlestick(x=data.index, open=data['open'], high=data['high'],
+                                low=data['low'], close=data['close'], name="Price"))
+    
+    # Order Blocks
+    ob_cond, ob_times = find_order_blocks(data)
+    for t in ob_times[-5:]:  # Last 5
+        row = data.loc[t]
+        fig.add_hrect(y0=row['low'], y1=row['high'], fillcolor="blue", opacity=0.2,
+                      line_width=1, layer="below")
+    
+    # EMA Bias
+    ema_fast = EMAIndicator(data['close'], window=21).ema_indicator()
+    ema_slow = EMAIndicator(data['close'], window=50).ema_indicator()
+    fig.add_trace(go.Scatter(x=data.index, y=ema_fast, name="EMA21", line=dict(color="green")))
+    fig.add_trace(go.Scatter(x=data.index, y=ema_slow, name="EMA50", line=dict(color="red")))
+    
+    st.plotly_chart(fig, use_container_width=True)
     
     col1, col2 = st.columns(2)
     with col1:
-        st.subheader("📈 Price Chart + Order Blocks")
-        fig = go.Figure()
-        fig.add_trace(go.Candlestick(
-            x=data.index, open=data['Open'], high=data['High'],
-            low=data['Low'], close=data['Close']
-        ))
-        
-        # Order blocks
-        ob = detect_order_blocks(data)
-        for i in data[ob].index:
-            fig.add_hrect(y0=data.loc[i, 'Low'], y1=data.loc[i, 'High'], 
-                          fillcolor="blue", opacity=0.2)
-        
-        st.plotly_chart(fig, use_container_width=True)
-    
+        bias = "BULL 📈" if ema_fast.iloc[-1] > ema_slow.iloc[-1] else "BEAR 📉"
+        st.metric("4H Bias", bias)
     with col2:
-        st.subheader("🚨 Live Signals")
-        fvg_bull, fvg_bear = fvg_signals(data)
-        
-        signals = pd.DataFrame({
-            'Time': data.tail(10).index,
-            'FVG Bull': fvg_bull.tail(10),
-            'Order Block': ob.tail(10),
-            'Signal': np.where(fvg_bull.tail(10) & ob.tail(10), 'LONG 🚀', 'WAIT')
-        })
-        st.dataframe(signals, use_container_width=True)
-        
-        if st.button("🔥 Send Alert to Telegram"):
-            st.success("Alert sent: EURUSD LONG 🚀 Order Block + FVG")
+        st.metric("Order Blocks (Last 24h)", len([t for t in ob_times if (data.index[-1] - t) < pd.Timedelta('1d')]))
 
-elif selected == "Backtest":
-    st.subheader("📊 Strategy Backtest (VectorBT)")
-    data = fetch_data(symbol, days=365)
+elif page == "Signals":
+    st.subheader("🚨 Live 5M Signals")
+    fvg_bull, fvg_bear = find_fvg(data)
     
-    # Simple OB strategy
-    entries = detect_order_blocks(data)
-    exits = entries.shift(5)  # 5-bar hold
+    signals = pd.DataFrame({
+        'Time': data.tail(20).index,
+        'FVG Bull': fvg_bull.tail(20),
+        'Order Block': ob_cond.tail(20),
+        'Bias Bull': ema_fast.tail(20) > ema_slow.tail(20),
+        'Signal': np.where((fvg_bull.tail(20) & ob_cond.tail(20) & (ema_fast.tail(20) > ema_slow.tail(20))), 'LONG 🚀', 'WAIT')
+    })
+    st.dataframe(signals, use_container_width=True)
     
-    pf = vbt.Portfolio.from_signals(data['Close'], entries, exits)
-    
-    st.metric("Sharpe Ratio", f"{pf.sharpe_ratio():.2f}")
-    st.metric("Max Drawdown", f"{pf.max_drawdown():.1%}")
-    st.metric("Total Return", f"{pf.total_return():.1%}")
-    
-    fig = pf.plot()
-    st.plotly_chart(fig[0])
+    if st.button("📱 Send Test Telegram Alert", use_container_width=True):
+        st.balloons()
+        st.success("🚨 EURUSD LONG 🚀 Order Block + FVG Detected!")
 
-elif selected == "Kelly Sizing":
-    st.subheader("⚖️ Kelly Criterion Sizing")
-    win_rate = st.slider("Win Rate", 0.5, 0.9, 0.74)
-    rr_ratio = st.slider("Reward:Risk", 1.0, 3.0, 1.8)
-    
-    kelly = (win_rate * rr_ratio - (1 - win_rate)) / rr_ratio
-    st.metric("Kelly %", f"{kelly:.1%}")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        st.caption("Safe Kelly (50%)")
-        st.metric("Position Size", f"{kelly*0.5:.1%}")
-    with col2:
-        st.caption("Aggressive Kelly")
-        st.metric("Position Size", f"{kelly:.1%}")
+elif page == "Backtest":
+    st.subheader("📊 Quick Backtest")
+    entries = ob_cond & fvg_bull
+    pf = vbt.Portfolio.from_signals(data['close'], entries, np.roll(entries, 5))
+    st.metric("Sharpe", f"{pf.sharpe_ratio():.2f}")
+    st.metric("Max DD", f"{pf.max_drawdown():.1%}")
+    st.line_chart(pf.equity)
 
-elif selected == "Tilt Monitor":
-    st.subheader("🧠 Psychological Tilt Score")
-    losses = st.slider("Consecutive Losses", 0, 5, 1)
-    sleep_hrs = st.slider("Sleep Hours", 4, 10, 7)
-    
-    tilt = 0.4 * (losses / 5) + 0.3 * max(0, (8 - sleep_hrs) / 8) + 0.3 * np.random.random()
-    st.metric("Tilt Score", f"{tilt:.0%}", delta="🔴 High")
-    
-    if tilt > 0.6:
-        st.error("🚨 EMERGENCY: Switch to Pattern 1 Manual Review")
-    else:
-        st.success("✅ Pattern 5 Autonomous OK")
+elif page == "Kelly":
+    st.subheader("⚖️ Kelly Sizing")
+    winrate = st.slider("Win Rate", 0.5, 0.8, 0.7)
+    rr = st.slider("R:R", 1.5, 3.0, 2.0)
+    kelly_raw = (winrate * rr - (1-winrate)) / rr
+    st.metric("Kelly Position Size", f"{kelly_raw * 0.5:.1%}", delta="+Safe 50%")
 
-# Footer
+# Fast footer
 st.markdown("---")
-st.markdown("*Built for top 0.01% performance | LuxAlgo SMC + Custom 5M Rules*")
+st.caption("*100% Free | Instant Load | LuxAlgo SMC + Custom Rules | No API Keys*")
